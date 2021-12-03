@@ -8,7 +8,6 @@ import argparse
 from subprocess import run, PIPE
 from datetime import datetime, timezone
 from phue import Bridge
-from astral import LocationInfo
 from astral.geocoder import lookup, database
 import astral.sun
 from huetils.utils import illumination, interpolate
@@ -72,7 +71,7 @@ def main():
     bridge.connect()
     light = bridge.get_light(args.light)
 
-    if light["state"]["on"] == False:
+    if not light["state"]["on"]:
         bridge.set_light(args.light, "on", True)
     bridge.set_light(args.light, "sat", 255)
     city = lookup(args.city, database())

@@ -5,10 +5,8 @@ python hue.py Paris --hue-bridge 10.0.0.7 --sensors 'Salon Entrée' 'Salon Four'
 import sys
 import argparse
 import logging
-from datetime import date, datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 
-import phue
-from astral import LocationInfo
 from astral.geocoder import lookup, database
 import astral.sun
 from phue import Bridge
@@ -72,7 +70,6 @@ def list_lights(bridge):
 
 def sensor_pressed_not_long_ago(bridge, sensors_to_watch):
     """Watch sensors, tell if one of them has been pressed."""
-    sensors = bridge.get_sensor_objects("name")
     now = datetime.now(timezone.utc)
     for sensor in bridge.sensors:
         if sensor.name not in sensors_to_watch:
@@ -105,7 +102,7 @@ def poweroff_lights(bridge, lights):
 
 def poweron_lights(bridge, lights):
     """Slowly power on given lights."""
-    logger.info("Need to power on lights %s", lights_to_watch)
+    logger.info("Need to power on lights %s", lights)
     for light in lights:
         if light.brightness == 255 and light.on:
             logger.info(
@@ -170,7 +167,7 @@ def redshift(bridge, now, lights, sun):
     target = interpolate(illum, min_temp, max_temp)
     logger.info(
         "It's transition time (%s transitionned), set temp=%s",
-        f"{transition_prog*100:.0f}%",
+        f"{illum*100:.0f}%",
         target,
     )
     transition_to_ct(bridge, lights, target)

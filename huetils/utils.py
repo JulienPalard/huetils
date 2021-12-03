@@ -33,7 +33,7 @@ def interpolate(alpha, min_temp, max_temp):
 def test_illumination():
     import astral.sun
     from astral.geocoder import lookup, database
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone
 
     def hour(h, m):
         return datetime(2021, 12, 25, h, m, 0).replace(tzinfo=timezone.utc)
