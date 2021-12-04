@@ -6,6 +6,7 @@ import sys
 import argparse
 import logging
 from datetime import datetime, timezone, timedelta
+from subprocess import run, PIPE
 
 from astral.geocoder import lookup, database
 import astral.sun
@@ -74,10 +75,10 @@ def sensor_pressed_not_long_ago(bridge, sensors_to_watch):
     for sensor in bridge.sensors:
         if sensor.name not in sensors_to_watch:
             continue
-        logging.info("Taking a look at sensor %s", sensor.name)
         pressed = datetime.fromisoformat(sensor.state["lastupdated"] + "+00:00")
         elapsed_since_pressed = now - pressed
         if elapsed_since_pressed < timedelta(minutes=60):
+            logging.info("Sensor %s pressed not long ago...", sensor.name)
             return True
 
 
@@ -100,38 +101,28 @@ def poweroff_lights(bridge, lights):
             bridge.set_light(light.light_id, "bri", 0, transitiontime=PERIOD * 60 * 10)
 
 
-def poweron_lights(bridge, lights):
+def poweron_lights(bridge, lights, illum):
     """Slowly power on given lights."""
-    logger.info("Need to power on lights %s", lights)
+    target = int(interpolate(illum, 255, 0))
     for light in lights:
-        if light.brightness == 255 and light.on:
-            logger.info(
-                "Light %s is on and at full brightness, nothing to do.", light.name
-            )
-            continue
         if not light.on:
-            logger.info(
-                "Light %s is off, powering on at lowest brightness.", light.name
-            )
+            logger.info("Light %s is off, powering on.", light.name)
             light.on = True
             light.brightness = 0
-        else:
-            logger.info(
-                "Light %s is at bri=%s, will slowly dim up",
-                light.name,
-                light.brightness,
-            )
-            bridge.set_light(
-                light.light_id, "bri", 255, transitiontime=PERIOD * 60 * 10
-            )
+        logger.info(
+            "Light %s is at bri=%s, will slowly dim to %s",
+            light.name,
+            light.brightness,
+            target,
+        )
+        bridge.set_light(light.light_id, "bri", target, transitiontime=PERIOD * 60 * 10)
 
 
 def set_lights_brightness(bridge, now, lights, sun, only_switchoff=False):
     """Set lights brightness according to sun position."""
-    sunrise, sunset = sun["sunrise"], sun["sunset"]
-    if now > sunrise and now < sunset:
+    illum = illumination(now, sun)
+    if illum == 1:
         logger.info("It's the day!")
-        # It's the day, shoot the lights
         poweroff_lights(bridge, lights)
         return
     # If we're here, it's the night
@@ -139,11 +130,14 @@ def set_lights_brightness(bridge, now, lights, sun, only_switchoff=False):
         logger.info("It's the night, everybody asleep.")
         # From 1AM to 7AM, lights should better be off.
         poweroff_lights(bridge, lights)
+        return
     # If we're here it's the night but someone may be up!
     if only_switchoff:
         return
-    logger.info("It's the night but someone may not be asleep.")
-    poweron_lights(bridge, lights)
+    logger.info(
+        f"It's not the day, illumination is at {illum:.0%}, switching on lights."
+    )
+    poweron_lights(bridge, lights, illum)
 
 
 def transition_to_ct(bridge, lights, ct):
@@ -152,25 +146,35 @@ def transition_to_ct(bridge, lights, ct):
 
 
 def redshift(bridge, now, lights, sun):
-    min_temp = 154  # in mireds
-    max_temp = 500
+    coldest = 153  # in mireds.
+    hottest = 500  # in mireds.
 
     illum = illumination(now, sun)
     if illum == 1:
-        logger.info("It's daytime, transition to min_temp.")
-        transition_to_ct(bridge, lights, min_temp)
+        logger.info("It's daytime, transition to coldest temp.")
+        transition_to_ct(bridge, lights, coldest)
         return
     if illum == 0:
-        logger.info("It's nighttime, transition to max_temp.")
-        transition_to_ct(bridge, lights, max_temp)
+        logger.info("It's nighttime, transition to hottest temp.")
+        transition_to_ct(bridge, lights, hottest)
         return
-    target = interpolate(illum, min_temp, max_temp)
+    target = int(interpolate(illum, hottest, coldest))
     logger.info(
-        "It's transition time (%s transitionned), set temp=%s",
-        f"{illum*100:.0f}%",
-        target,
+        f"[redshift] It's transition time ({illum:.0%} illuminated), set mireds={target} "
+        "(132 is cold, 500 is hot)",
     )
     transition_to_ct(bridge, lights, target)
+
+
+def check_if_cloudy(latitude, longitude):
+    sky_conditions = run(
+        ["weather", "--headers", "Sky conditions", "-q", f"{latitude},{longitude}"],
+        stdout=PIPE,
+        check=True,
+        encoding="UTF-8",
+    ).stdout.strip()
+    logger.info("Sky is %s", sky_conditions)
+    return any(bad in sky_conditions for bad in ("cloudy", "overcast"))
 
 
 def main():
@@ -188,6 +192,7 @@ def main():
         logger.info("Sensor pressed not long ago, leaving.")
         return
     city = lookup(args.city, database())
+    is_cloudy = check_if_cloudy(city.latitude, city.longitude)
     if args.now:
         now = datetime.fromisoformat(args.now).astimezone().astimezone(timezone.utc)
     else:
@@ -196,11 +201,21 @@ def main():
     controlled_lights = [light for light in bridge.lights if light.name in args.lights]
     logger.info("Information for %s/%s", city.name, city.region)
     logger.info("Timezone: %s", city.timezone)
-    logger.info("Dawn: %s", sun["dawn"])
-    logger.info("Sunrise: %s", sun["sunrise"])
-    logger.info("Sunset: %s", sun["sunset"])
-    logger.info("Dusk: %s", sun["dusk"])
-    logger.info("Now: %s", now)
+
+    def log_hour(date):
+        return date.astimezone().strftime("%H:%M")
+
+    logger.info(f"Now: {log_hour(now)}")
+    logger.info(f"Dawn: {log_hour(sun['dawn'])}")
+    logger.info(f"Sunrise: {log_hour(sun['sunrise'])}")
+    logger.info(f"Sunset: {log_hour(sun['sunset'])}")
+    logger.info(f"Dusk: {log_hour(sun['dusk'])}")
+    if is_cloudy:
+        logger.info("Sky being cloudy, power on 30m sooner, as if:")
+        sun["sunset"] = sun["sunset"] - timedelta(minutes=30)
+        sun["dusk"] = sun["dusk"] - timedelta(minutes=30)
+        logger.info(f"Sunset: {log_hour(sun['sunset'])}")
+        logger.info(f"Dusk: {log_hour(sun['dusk'])}")
     set_lights_brightness(
         bridge, now, controlled_lights, sun, only_switchoff=args.only_switchoff
     )
