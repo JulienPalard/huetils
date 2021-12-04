@@ -146,9 +146,15 @@ def transition_to_ct(bridge, lights, ct):
 
 
 def redshift(bridge, now, lights, sun):
+    """Shift color temperature according to time of the day.
+
+    During the morning we shift from hottest to coldest from dawn to sunrise.
+    During the evening we shift from coldest to hottest from sunset to dusk + 3h.
+    """
     coldest = 153  # in mireds.
     hottest = 500  # in mireds.
-
+    sun = sun.copy()
+    sun["dusk"] = sun["dusk"] + timedelta(hours=3)
     illum = illumination(now, sun)
     if illum == 1:
         logger.info("It's daytime, transition to coldest temp.")
@@ -160,7 +166,7 @@ def redshift(bridge, now, lights, sun):
         return
     target = int(interpolate(illum, hottest, coldest))
     logger.info(
-        f"[redshift] It's transition time ({illum:.0%} illuminated), set mireds={target} "
+        f"[redshift] It's transition time ({illum:.0%}), set mireds={target} "
         "(132 is cold, 500 is hot)",
     )
     transition_to_ct(bridge, lights, target)
@@ -173,7 +179,7 @@ def check_if_cloudy(latitude, longitude):
         check=True,
         encoding="UTF-8",
     ).stdout.strip()
-    logger.info("Sky is %s", sky_conditions)
+    logger.info(sky_conditions)
     return any(bad in sky_conditions for bad in ("cloudy", "overcast"))
 
 
